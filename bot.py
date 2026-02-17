@@ -154,6 +154,9 @@ async def send_warn_msg(bot, text):
 def next_session_num(n):
     return (n % MAX_SESSION_NUM) + 1
 
+def prev_session_num(n):
+    return MAX_SESSION_NUM if n == 1 else n - 1
+
 def make_tracking_url(tg_id, post_num, sess_num):
     return f"{SERVER_URL}/visit?uid={tg_id}&post={post_num}&sess={sess_num}"
 
@@ -212,7 +215,7 @@ async def get_target_user(update, context):
 # ════════════════════════════════════════════════════════════════
 def update_streak(user_id):
     last = user_last_session.get(user_id)
-    if last is not None and last == session_number - 1:
+    if last is not None and last == prev_session_num(session_number):
         user_streaks[user_id] = user_streaks.get(user_id, 0) + 1
     elif last != session_number:
         user_streaks[user_id] = 1
@@ -905,4 +908,3 @@ async def start_scheduler(application):
 
 app.post_init = start_scheduler
 app.run_polling()
-
