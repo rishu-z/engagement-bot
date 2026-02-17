@@ -15,7 +15,7 @@ from telegram.ext import (
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import datetime, asyncio, os
-import server
+import aiohttp
 
 # ════════════════════════════════════════════════════════════════
 # CONFIG
@@ -28,6 +28,21 @@ SERVER_URL    = os.environ.get("SERVER_URL", "http://localhost:5000")
 
 ENGAGE_THRESHOLD = 70
 MAX_SESSION_NUM  = 4
+
+# ════════════════════════════════════════════════════════════════
+# SERVER API HELPERS
+# ════════════════════════════════════════════════════════════════
+async def get_clicks_for_session(sess_num):
+    """Fetch clicks from server via HTTP."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{SERVER_URL}/api/clicks/{sess_num}") as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("clicks", [])
+    except Exception as e:
+        print(f"Error fetching clicks: {e}")
+    return []
 
 # ════════════════════════════════════════════════════════════════
 # IST Schedule Definition
@@ -98,9 +113,6 @@ user_last_session = {}
 topic_messages = {}
 session_links = {}
 session_members = set()
-
-server.session_links_ref = session_links
-server.user_cache_ref = user_cache
 
 # ════════════════════════════════════════════════════════════════
 # HELPERS
@@ -244,9 +256,11 @@ async def build_report(bot, chat_id, thread_id, sess_num, do_warn=True):
     total = len(session_links)
     admin_ids = await get_admin_ids(bot)
 
-    rows = server.get_clicks_for_session(sess_num)
+    rows = await get_clicks_for_session(sess_num)
     user_clicked_posts = {}
-    for (post_num, tg_id, _, _, _, _) in rows:
+    for entry in rows:
+        post_num = entry.get("post_num")
+        tg_id = entry.get("tg_id")
         user_clicked_posts.setdefault(tg_id, set()).add(post_num)
 
     engaged, non_engaged = [], []
@@ -821,7 +835,7 @@ async def dashboard_buttons(update, context):
         auto_sessions_enabled = not auto_sessions_enabled
         await query.edit_message_text(f"Auto Sessions: {'ON' if auto_sessions_enabled else 'OFF'}")
     elif query.data == "stats":
-        rows = server.get_clicks_for_session(session_number)
+        rows = await get_clicks_for_session(session_number)
         await query.edit_message_text(
             f"Session: {session_number}\nPosts: {len(user_posts)}\nClicks: {len(rows)}"
         )
@@ -891,3 +905,4 @@ async def start_scheduler(application):
 
 app.post_init = start_scheduler
 app.run_polling()
+
