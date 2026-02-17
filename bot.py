@@ -26,7 +26,7 @@ POST_TOPIC_ID = int(os.environ.get("POST_TOPIC_ID", "2"))
 WARN_TOPIC_ID = int(os.environ.get("WARN_TOPIC_ID", "902"))
 SERVER_URL    = os.environ.get("SERVER_URL", "http://localhost:5000")
 
-ENGAGE_THRESHOLD = 70
+ENGAGE_THRESHOLD = 90
 MAX_SESSION_NUM  = 4
 
 # ════════════════════════════════════════════════════════════════
@@ -154,8 +154,34 @@ async def send_warn_msg(bot, text):
 def next_session_num(n):
     return (n % MAX_SESSION_NUM) + 1
 
-def make_tracking_url(tg_id, post_num, sess_num):
-    return f"{SERVER_URL}/visit?uid={tg_id}&post={post_num}&sess={sess_num}"
+def prev_session_num(n):
+    return MAX_SESSION_NUM if n == 1 else n - 1
+
+def make_tracking_url(tg_id, post_num, sess_num, target_url=None):
+    base = f"{SERVER_URL}/visit?uid={tg_id}&post={post_num}&sess={sess_num}"
+    if target_url:
+        from urllib.parse import quote_plus
+        return f"{base}&target={quote_plus(target_url)}"
+    return base
+
+
+def is_post_topic_message(update):
+    msg = update.effective_message
+    return bool(msg and msg.message_thread_id == POST_TOPIC_ID)
+
+
+async def open_post_topic(bot):
+    try:
+        await bot.reopen_forum_topic(chat_id=CHAT_ID, message_thread_id=POST_TOPIC_ID)
+    except Exception:
+        pass
+
+
+async def close_post_topic(bot):
+    try:
+        await bot.close_forum_topic(chat_id=CHAT_ID, message_thread_id=POST_TOPIC_ID)
+    except Exception:
+        pass
 
 # ════════════════════════════════════════════════════════════════
 # ADMIN / USER
@@ -212,7 +238,7 @@ async def get_target_user(update, context):
 # ════════════════════════════════════════════════════════════════
 def update_streak(user_id):
     last = user_last_session.get(user_id)
-    if last is not None and last == session_number - 1:
+    if last is not None and last == prev_session_num(session_number):
         user_streaks[user_id] = user_streaks.get(user_id, 0) + 1
     elif last != session_number:
         user_streaks[user_id] = 1
@@ -369,6 +395,7 @@ async def auto_open(context):
     session_open = True
 
     thread_id = context.job.data
+    await open_post_topic(context.bot)
     sent = await context.bot.send_message(
         chat_id=CHAT_ID, message_thread_id=thread_id,
         text=f"❑ Session {session_number} Started Now ❑\n\n✅ Start Posting Your Links Now"
@@ -380,6 +407,7 @@ async def auto_close(context):
     thread_id = context.job.data
     total = len(user_posts)
     session_open = False
+    await close_post_topic(context.bot)
 
     sent = await context.bot.send_message(
         chat_id=CHAT_ID, message_thread_id=thread_id,
@@ -437,18 +465,30 @@ async def notify_5min(context):
 async def startsession(update, context):
     if not await is_admin(update, context):
         return
+    if not is_post_topic_message(update):
+        msg = await update.message.reply_text("Use /startsession only in post topic.")
+        asyncio.create_task(auto_delete(context, update.effective_chat.id, msg.message_id, 10))
+        await update.message.delete()
+        return
     global session_open
     _clear_session()
     session_open = True
+    await open_post_topic(context.bot)
     await update.message.reply_text(f"✅ Manual Session {session_number} Started\n\n❑ Start Posting Your Links ❑")
     await update.message.delete()
 
 async def endsession(update, context):
     if not await is_admin(update, context):
         return
+    if not is_post_topic_message(update):
+        msg = await update.message.reply_text("Use /endsession only in post topic.")
+        asyncio.create_task(auto_delete(context, update.effective_chat.id, msg.message_id, 10))
+        await update.message.delete()
+        return
     global session_open
     total = len(user_posts)
     session_open = False
+    await close_post_topic(context.bot)
 
     await update.message.reply_text(
         f"""❑ Session {session_number} Closed Now ❑
@@ -537,9 +577,13 @@ async def handle_message(update, context):
 
     x_username = "Unknown"
     try:
-        if "x.com" in text:
-            parts = text.split("/")
-            x_username = parts[3] if len(parts) > 3 else "Unknown"
+        from urllib.parse import urlparse
+        for token in text.split():
+            if "x.com/" in token:
+                path_parts = [p for p in urlparse(token).path.split("/") if p]
+                if path_parts:
+                    x_username = path_parts[0].replace("@", "")
+                break
     except Exception:
         pass
 
@@ -552,23 +596,21 @@ async def handle_message(update, context):
     }
 
     formatted = (
-        f"Post -- {post_num}\n"
-        f"‣‣ Name - {user.full_name}\n"
-        f"‣‣ X Username - @{x_username}{s_text}\n"
-        f"⚡︎ - {text}\n"
+        f"Post - {post_num}\n\n"
+        f"𖣯 Name - {user.full_name}\n\n"
+        f"𖣯 X - @{x_username}{s_text}"
     )
 
     await update.message.delete()
 
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔗 Visit & Engage", callback_data=f"visit_{post_num}")]
+        [InlineKeyboardButton("✅ Visit & Engage", callback_data=f"visit_{post_num}")]
     ])
 
     sent = await context.bot.send_message(
         chat_id=update.effective_chat.id,
         message_thread_id=update.message.message_thread_id,
         text=formatted,
-        parse_mode="Markdown",
         reply_markup=keyboard
     )
     user_posts[user.id] = sent.message_id
@@ -591,8 +633,13 @@ async def button_handler(update, context):
         if clicker.id == session_links[post_num]["poster_id"]:
             await query.answer("❌ Apna link khud visit nahi kar sakte!", show_alert=True)
             return
-        url = make_tracking_url(clicker.id, post_num, session_number)
-        await query.answer(url=url)
+        track_url = make_tracking_url(clicker.id, post_num, session_number, session_links[post_num]["url"])
+        try:
+            async with aiohttp.ClientSession() as session:
+                await session.get(track_url)
+        except Exception:
+            pass
+        await query.answer(url=session_links[post_num]["url"])
 
     elif query.data.startswith("delete_"):
         await query.answer()
@@ -610,6 +657,11 @@ async def button_handler(update, context):
 # COOLME
 # ════════════════════════════════════════════════════════════════
 async def coolme(update, context):
+    if not is_post_topic_message(update):
+        msg = await update.message.reply_text("Use /coolme only in post topic.")
+        asyncio.create_task(auto_delete(context, update.effective_chat.id, msg.message_id, 10))
+        await update.message.delete()
+        return
     user = update.effective_user
     if user.id not in user_posts:
         return
@@ -816,6 +868,11 @@ async def closetopic(update, context):
 # DASHBOARD
 # ════════════════════════════════════════════════════════════════
 async def setsession(update, context):
+    if not is_post_topic_message(update):
+        msg = await update.message.reply_text("Use /setsession only in post topic.")
+        asyncio.create_task(auto_delete(context, update.effective_chat.id, msg.message_id, 10))
+        await update.message.delete()
+        return
     kb = [
         [InlineKeyboardButton("View Timings", callback_data="view_times")],
         [InlineKeyboardButton("Toggle Auto", callback_data="toggle_auto")],
@@ -905,4 +962,3 @@ async def start_scheduler(application):
 
 app.post_init = start_scheduler
 app.run_polling()
-
