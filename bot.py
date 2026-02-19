@@ -273,7 +273,7 @@ async def coolme(update,context):
 async def button_handler(update,context):
  query=update.callback_query;await query.answer()
  if query.data.startswith("delete_"):uid=int(query.data.split("_")[1]);
-  if uid in user_posts:await context.bot.delete_message(CHAT_ID,user_posts[uid]);del user_posts[uid];await query.edit_message_text("Deleted.")
+ if uid in user_posts:await context.bot.delete_message(CHAT_ID,user_posts[uid]);del user_posts[uid];await query.edit_message_text("Deleted.")
  elif query.data=="cancel":await query.edit_message_text("Cancelled.")
 
 async def warn(update,context):
