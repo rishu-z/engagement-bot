@@ -1,6 +1,5 @@
 """
-Telegram Engagement Bot - COMPLETE WORKING VERSION
-All Features: Server tracking, Auto sessions, Commands, 90% threshold
+Telegram Engagement Bot - SCHEDULER FIXED
 """
 
 from telegram import Update, ChatPermissions, InlineKeyboardMarkup, InlineKeyboardButton
@@ -9,7 +8,6 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import datetime, asyncio, os, aiohttp
 from urllib.parse import quote
 
-# CONFIG
 TOKEN=os.environ.get("TOKEN","")
 CHAT_ID=int(os.environ.get("CHAT_ID","-1003800205030"))
 POST_TOPIC_ID=int(os.environ.get("POST_TOPIC_ID","2"))
@@ -18,7 +16,6 @@ SERVER_URL=os.environ.get("SERVER_URL","http://localhost:5000")
 ENGAGE_THRESHOLD=90
 MAX_SESSION_NUM=4
 
-# IST Schedule
 SCHEDULE_IST=[
 {"open":(11,0),"close":(11,30),"check":(15,30),"report":(15,45),"notify10":(15,50),"notify5":(15,55)},
 {"open":(16,0),"close":(16,30),"check":(19,30),"report":(19,45),"notify10":(19,50),"notify5":(19,55)},
@@ -31,7 +28,6 @@ def ist_to_utc(h,m):
  if t<0:t+=1440
  return(t//60)%24,t%60
 
-# STATE
 scheduler=AsyncIOScheduler()
 session_open=False
 auto_sessions_enabled=True
@@ -39,7 +35,6 @@ session_number=1
 counter=1
 user_posts,posted_links,warnings,user_cache,user_streaks,user_last_session,topic_messages,session_members,session_links={},set(),{},{},{},{},{},set(),{}
 
-# HELPERS
 def timing_text_ist():
  times=[]
  for s in SCHEDULE_IST:
@@ -72,14 +67,11 @@ async def is_admin(update,context):
  return update.effective_user.id in{a.user.id for a in admins}
 
 async def get_admin_ids(bot):
- try:
-  admins=await bot.get_chat_administrators(CHAT_ID)
-  return{a.user.id for a in admins}
+ try:admins=await bot.get_chat_administrators(CHAT_ID);return{a.user.id for a in admins}
  except:return set()
 
 async def get_target_user(update,context):
- if update.message.reply_to_message:
-  u=update.message.reply_to_message.from_user;_cache_user(u);return u
+ if update.message.reply_to_message:u=update.message.reply_to_message.from_user;_cache_user(u);return u
  if not context.args:return None
  target=context.args[0].replace("@","").lower()
  if target.isdigit():
@@ -122,9 +114,7 @@ async def send_leaderboard(bot,cid,tid,snum):
  track_msg(tid,lb.message_id)
 
 async def build_report(bot,cid,tid,snum,do_warn=True):
- if not session_members:
-  await bot.send_message(chat_id=cid,message_thread_id=tid,text=f"📊 Session {snum} — No posts")
-  return
+ if not session_members:await bot.send_message(chat_id=cid,message_thread_id=tid,text=f"📊 Session {snum} — No posts");return
  total=len(session_members);admin_ids=await get_admin_ids(bot)
  try:
   async with aiohttp.ClientSession()as sess:
@@ -177,48 +167,47 @@ async def build_report(bot,cid,tid,snum,do_warn=True):
     until=datetime.datetime.now()+datetime.timedelta(days=1)
     await bot.restrict_chat_member(cid,uid,permissions=ChatPermissions(can_send_messages=False),until_date=until)
     await send_warn_msg(bot,f"⚠️ {tg} — Warn {wc}/4 | 🔕 Muted 1 day")
-   elif wc>=4:
-    await bot.ban_chat_member(cid,uid);await bot.unban_chat_member(cid,uid)
-    await send_warn_msg(bot,f"🚫 {tg} — Removed (4 warns)")
+   elif wc>=4:await bot.ban_chat_member(cid,uid);await bot.unban_chat_member(cid,uid);await send_warn_msg(bot,f"🚫 {tg} — Removed (4 warns)")
    else:await send_warn_msg(bot,f"⚠️ {tg} — Warning {wc}/4")
   except:pass
 
-def _clear_session():
- user_posts.clear();posted_links.clear();session_members.clear();session_links.clear()
- global counter;counter=1
+def _clear_session():user_posts.clear();posted_links.clear();session_members.clear();session_links.clear();global counter;counter=1
 
-async def auto_open(context):
+# SCHEDULER JOBS - FIXED
+bot_instance=None
+
+async def auto_open():
  global session_open
  if not auto_sessions_enabled:return
  _clear_session();session_open=True
- try:await context.bot.reopen_forum_topic(chat_id=CHAT_ID,message_thread_id=POST_TOPIC_ID)
+ try:await bot_instance.reopen_forum_topic(chat_id=CHAT_ID,message_thread_id=POST_TOPIC_ID)
  except:pass
- sent=await context.bot.send_message(chat_id=CHAT_ID,message_thread_id=POST_TOPIC_ID,text=f"❑ Session {session_number} Started ❑\n\n✅ Start Posting Links")
+ sent=await bot_instance.send_message(chat_id=CHAT_ID,message_thread_id=POST_TOPIC_ID,text=f"❑ Session {session_number} Started ❑\n\n✅ Start Posting Links")
  track_msg(POST_TOPIC_ID,sent.message_id)
 
-async def auto_close(context):
+async def auto_close():
  global session_open;session_open=False;total=len(user_posts)
- sent=await context.bot.send_message(chat_id=CHAT_ID,message_thread_id=POST_TOPIC_ID,text=f"❑ Session {session_number} Closed ❑\n\n> Total - {total}\n\n✅ Engage All\n❌ Don't Delete\n\n> {timing_text_ist()}")
+ sent=await bot_instance.send_message(chat_id=CHAT_ID,message_thread_id=POST_TOPIC_ID,text=f"❑ Session {session_number} Closed ❑\n\n> Total - {total}\n\n✅ Engage All\n❌ Don't Delete\n\n> {timing_text_ist()}")
  track_msg(POST_TOPIC_ID,sent.message_id)
- try:await context.bot.close_forum_topic(chat_id=CHAT_ID,message_thread_id=POST_TOPIC_ID)
+ try:await bot_instance.close_forum_topic(chat_id=CHAT_ID,message_thread_id=POST_TOPIC_ID)
  except:pass
 
-async def pre_check(context):
- sent=await context.bot.send_message(chat_id=CHAT_ID,message_thread_id=POST_TOPIC_ID,text=f"✅ Checking Time Session {session_number} ✅")
+async def pre_check():
+ sent=await bot_instance.send_message(chat_id=CHAT_ID,message_thread_id=POST_TOPIC_ID,text=f"✅ Checking Time Session {session_number} ✅")
  track_msg(POST_TOPIC_ID,sent.message_id)
 
-async def generate_report(context):
- await send_leaderboard(context.bot,CHAT_ID,POST_TOPIC_ID,session_number)
- await build_report(context.bot,CHAT_ID,POST_TOPIC_ID,session_number,do_warn=True)
+async def generate_report():
+ await send_leaderboard(bot_instance,CHAT_ID,POST_TOPIC_ID,session_number)
+ await build_report(bot_instance,CHAT_ID,POST_TOPIC_ID,session_number,do_warn=True)
 
-async def notify_10min(context):
+async def notify_10min():
  next_s=next_session_num(session_number)
- sent=await context.bot.send_message(chat_id=CHAT_ID,message_thread_id=POST_TOPIC_ID,text=f"⚡️ **ATTENTION** ⚡️\n\n❑ Session {next_s} In 10 Mins",parse_mode="Markdown")
+ sent=await bot_instance.send_message(chat_id=CHAT_ID,message_thread_id=POST_TOPIC_ID,text=f"⚡️ **ATTENTION** ⚡️\n\n❑ Session {next_s} In 10 Mins",parse_mode="Markdown")
  track_msg(POST_TOPIC_ID,sent.message_id)
 
-async def notify_5min(context):
+async def notify_5min():
  global session_number;next_s=next_session_num(session_number)
- sent=await context.bot.send_message(chat_id=CHAT_ID,message_thread_id=POST_TOPIC_ID,text=f"⚡️ **ATTENTION** ⚡️\n\n❑ Session {next_s} In 5 Mins",parse_mode="Markdown")
+ sent=await bot_instance.send_message(chat_id=CHAT_ID,message_thread_id=POST_TOPIC_ID,text=f"⚡️ **ATTENTION** ⚡️\n\n❑ Session {next_s} In 5 Mins",parse_mode="Markdown")
  track_msg(POST_TOPIC_ID,sent.message_id);session_number=next_s
 
 async def startsession(update,context):
@@ -241,8 +230,7 @@ async def handle_message(update,context):
  global counter
  if update.message.message_thread_id!=POST_TOPIC_ID:return
  if not session_open:await update.message.delete();return
- text=update.message.text or"";user=update.message.from_user;_cache_user(user)
- track_msg(update.message.message_thread_id,update.message.message_id)
+ text=update.message.text or"";user=update.message.from_user;_cache_user(user);track_msg(update.message.message_thread_id,update.message.message_id)
  if"http"not in text:return
  if user.id in user_posts:await update.message.delete();return
  if text in posted_links:await update.message.delete();return
@@ -256,8 +244,7 @@ async def handle_message(update,context):
  try:
   if"x.com"in text:x_username=text.split("/")[3]
  except:pass
- post_num=counter
- session_links[post_num]={"url":text,"poster_id":user.id,"x_username":x_username}
+ post_num=counter;session_links[post_num]={"url":text,"poster_id":user.id,"x_username":x_username}
  formatted=f"Post - {post_num}\n𖣯 Name - {user.full_name}{s_emoji}\n𖣯 X - @{x_username}\n‣ {text}"
  await update.message.delete()
  track_url=f"{SERVER_URL}/track?uid={user.id}&post={post_num}&sess={session_number}&x={quote(x_username)}&link={quote(text)}"
@@ -273,23 +260,19 @@ async def report_cmd(update,context):
 
 async def topicid(update,context):
  if not await is_admin(update,context):return
- tid=update.message.message_thread_id
- msg=await update.message.reply_text(f"📌 Topic ID: `{tid}`",parse_mode="Markdown")
- asyncio.create_task(auto_delete(context,update.effective_chat.id,msg.message_id,30))
- await update.message.delete()
+ tid=update.message.message_thread_id;msg=await update.message.reply_text(f"📌 Topic ID: `{tid}`",parse_mode="Markdown")
+ asyncio.create_task(auto_delete(context,update.effective_chat.id,msg.message_id,30));await update.message.delete()
 
 async def coolme(update,context):
  if update.message.message_thread_id!=POST_TOPIC_ID:return
  user=update.effective_user
  if user.id not in user_posts:return
  kb=InlineKeyboardMarkup([[InlineKeyboardButton("Yes",callback_data=f"delete_{user.id}"),InlineKeyboardButton("No",callback_data="cancel")]])
- await update.message.reply_text("Delete post?",reply_markup=kb)
- await update.message.delete()
+ await update.message.reply_text("Delete post?",reply_markup=kb);await update.message.delete()
 
 async def button_handler(update,context):
  query=update.callback_query;await query.answer()
- if query.data.startswith("delete_"):
-  uid=int(query.data.split("_")[1])
+ if query.data.startswith("delete_"):uid=int(query.data.split("_")[1]);
   if uid in user_posts:await context.bot.delete_message(CHAT_ID,user_posts[uid]);del user_posts[uid];await query.edit_message_text("Deleted.")
  elif query.data=="cancel":await query.edit_message_text("Cancelled.")
 
@@ -297,15 +280,12 @@ async def warn(update,context):
  if not await is_admin(update,context):return
  user=await get_target_user(update,context)
  if not user:return
- warnings[user.id]=warnings.get(user.id,0)+1;wc=warnings[user.id]
- uname=f"@{user.username}"if user.username else user.full_name
+ warnings[user.id]=warnings.get(user.id,0)+1;wc=warnings[user.id];uname=f"@{user.username}"if user.username else user.full_name
  if wc==2:
   until=datetime.datetime.now()+datetime.timedelta(days=1)
   await context.bot.restrict_chat_member(CHAT_ID,user.id,permissions=ChatPermissions(can_send_messages=False),until_date=until)
   await send_warn_msg(context.bot,f"❑ {uname}\nWarned {wc}/4\n🔕 Muted 1d")
- elif wc>=4:
-  await context.bot.ban_chat_member(CHAT_ID,user.id);await context.bot.unban_chat_member(CHAT_ID,user.id)
-  await send_warn_msg(context.bot,f"❑ {uname}\nWarned {wc}/4\n🚫 Removed")
+ elif wc>=4:await context.bot.ban_chat_member(CHAT_ID,user.id);await context.bot.unban_chat_member(CHAT_ID,user.id);await send_warn_msg(context.bot,f"❑ {uname}\nWarned {wc}/4\n🚫 Removed")
  else:await send_warn_msg(context.bot,f"❑ {uname}\nWarned {wc}/4")
  await update.message.delete()
 
@@ -313,52 +293,42 @@ async def removewarn(update,context):
  if not await is_admin(update,context):return
  user=await get_target_user(update,context)
  if not user:return
- warnings[user.id]=0
- uname=f"@{user.username}"if user.username else user.full_name
- await send_warn_msg(context.bot,f"❑ {uname}\nWarnings Reset ✅")
- await update.message.delete()
+ warnings[user.id]=0;uname=f"@{user.username}"if user.username else user.full_name
+ await send_warn_msg(context.bot,f"❑ {uname}\nWarnings Reset ✅");await update.message.delete()
 
 async def mute(update,context):
  if not await is_admin(update,context):return
  user=await get_target_user(update,context)
  if not user:return
- days=next((int(a)for a in(context.args or[])if a.isdigit()),1)
- until=datetime.datetime.now()+datetime.timedelta(days=days)
+ days=next((int(a)for a in(context.args or[])if a.isdigit()),1);until=datetime.datetime.now()+datetime.timedelta(days=days)
  await context.bot.restrict_chat_member(CHAT_ID,user.id,permissions=ChatPermissions(can_send_messages=False),until_date=until)
- await send_warn_msg(context.bot,f"🔕 @{user.username or user.full_name} muted {days}d")
- await update.message.delete()
+ await send_warn_msg(context.bot,f"🔕 @{user.username or user.full_name} muted {days}d");await update.message.delete()
 
 async def unmute(update,context):
  if not await is_admin(update,context):return
  user=await get_target_user(update,context)
  if not user:return
  await context.bot.restrict_chat_member(CHAT_ID,user.id,permissions=ChatPermissions(can_send_messages=True))
- await send_warn_msg(context.bot,f"🔔 @{user.username or user.full_name} unmuted")
- await update.message.delete()
+ await send_warn_msg(context.bot,f"🔔 @{user.username or user.full_name} unmuted");await update.message.delete()
 
 async def ban(update,context):
  if not await is_admin(update,context):return
  user=await get_target_user(update,context)
  if not user:return
- await context.bot.ban_chat_member(CHAT_ID,user.id)
- await send_warn_msg(context.bot,f"🚫 @{user.username or user.full_name} banned")
- await update.message.delete()
+ await context.bot.ban_chat_member(CHAT_ID,user.id);await send_warn_msg(context.bot,f"🚫 @{user.username or user.full_name} banned");await update.message.delete()
 
 async def unban(update,context):
  if not await is_admin(update,context):return
  user=await get_target_user(update,context)
  if not user:return
- await context.bot.unban_chat_member(CHAT_ID,user.id)
- await send_warn_msg(context.bot,f"✅ @{user.username or user.full_name} unbanned")
- await update.message.delete()
+ await context.bot.unban_chat_member(CHAT_ID,user.id);await send_warn_msg(context.bot,f"✅ @{user.username or user.full_name} unbanned");await update.message.delete()
 
 async def remove(update,context):
  if not await is_admin(update,context):return
  user=await get_target_user(update,context)
  if not user:return
  await context.bot.ban_chat_member(CHAT_ID,user.id);await context.bot.unban_chat_member(CHAT_ID,user.id)
- await send_warn_msg(context.bot,f"👋 @{user.username or user.full_name} removed")
- await update.message.delete()
+ await send_warn_msg(context.bot,f"👋 @{user.username or user.full_name} removed");await update.message.delete()
 
 async def pin(update,context):
  if not await is_admin(update,context):return
@@ -433,8 +403,9 @@ for idx,sched in enumerate(SCHEDULE_IST):
  scheduler.add_job(notify_10min,"cron",hour=n10h,minute=n10m,id=f"n10_{idx}")
  scheduler.add_job(notify_5min,"cron",hour=n5h,minute=n5m,id=f"n5_{idx}")
 
-async def start_scheduler(application):scheduler.start()
+async def start_scheduler(application):
+ global bot_instance;bot_instance=application.bot;scheduler.start()
+
 app.post_init=start_scheduler
 
-if __name__=="__main__":
- print("🚀 Bot starting...");app.run_polling()
+if __name__=="__main__":print("🚀 Bot starting...");app.run_polling()
