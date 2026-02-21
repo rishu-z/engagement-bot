@@ -119,6 +119,10 @@ def next_session_num(n):
 # ═══════════════════════════════════════════════════════════════
 # ADMIN & USER FUNCTIONS
 # ═══════════════════════════════════════════════════════════════
+
+async def getid(update, context):
+    await update.message.reply_text(str(update.effective_chat.id))
+    
 async def is_admin(update, context):
     """Check if user is admin"""
     admins = await context.bot.get_chat_administrators(update.effective_chat.id)
@@ -947,6 +951,7 @@ commands = [
     ("clear", clear_topic),
     ("topicid", topicid),
     ("setsession", setsession),
+    ("getid", getid),
 ]
 
 for cmd, fn in commands:
