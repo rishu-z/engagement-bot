@@ -100,8 +100,7 @@ async def send_warn_msg(bot, text):
     if WARN_TOPIC_ID:
         kwargs["message_thread_id"] = WARN_TOPIC_ID
     msg = await bot.send_message(**kwargs)
-    # Auto-delete warn notifications after 10 seconds
-    asyncio.create_task(auto_delete_message(bot, CHAT_ID, msg.message_id, 10))
+    # Warn messages stay visible - no auto-delete
     return msg
 
 async def auto_delete_message(bot, chat_id, msg_id, delay=10):
@@ -119,10 +118,6 @@ def next_session_num(n):
 # ═══════════════════════════════════════════════════════════════
 # ADMIN & USER FUNCTIONS
 # ═══════════════════════════════════════════════════════════════
-
-async def getid(update, context):
-    await update.message.reply_text(str(update.effective_chat.id))
-    
 async def is_admin(update, context):
     """Check if user is admin"""
     admins = await context.bot.get_chat_administrators(update.effective_chat.id)
@@ -330,13 +325,13 @@ async def build_report(bot, cid, tid, snum, do_warn=True):
             if wc == 2:
                 until = datetime.datetime.now() + datetime.timedelta(days=1)
                 await bot.restrict_chat_member(cid, uid, permissions=ChatPermissions(can_send_messages=False), until_date=until)
-                await send_warn_msg(bot, f"⚠️ User — {tg}\n\n>> Warned {wc}/4\n🔕 Muted For 1 Day")
+                await send_warn_msg(bot, f"🚨 User — {tg}\n\n❌ Warned For Not Engaging In Session {snum}\n\n>> Warning {wc}/4\n🔕 Muted For 1 Day")
             elif wc >= 4:
                 await bot.ban_chat_member(cid, uid)
                 await bot.unban_chat_member(cid, uid)
-                await send_warn_msg(bot, f"🚫 User — {tg}\n\n>> Warned {wc}/4\n❌ Removed From Group")
+                await send_warn_msg(bot, f"🚨 User — {tg}\n\n❌ Warned For Not Engaging In Session {snum}\n\n>> Warning {wc}/4\n🚫 Removed From Group")
             else:
-                await send_warn_msg(bot, f"⚠️ User — {tg}\n\n>> Warning {wc}/4")
+                await send_warn_msg(bot, f"🚨 User — {tg}\n\n❌ Warned For Not Engaging In Session {snum}\n\n>> Warning {wc}/4")
         except:
             pass
 
@@ -355,14 +350,15 @@ def _clear_session():
 # ═══════════════════════════════════════════════════════════════
 # AUTOMATED SCHEDULER JOBS
 # ═══════════════════════════════════════════════════════════════
-async def auto_open():
-    """Auto-open session"""
-    global session_open
+async def auto_open(sess_num):
+    """Auto-open session with correct session number"""
+    global session_open, session_number
     if not auto_sessions_enabled:
         return
     
     _clear_session()
     session_open = True
+    session_number = sess_num  # Set correct session number
     
     # Open topic
     try:
@@ -424,9 +420,9 @@ async def generate_report():
     await send_leaderboard(bot_instance, CHAT_ID, POST_TOPIC_ID, session_number)
     await build_report(bot_instance, CHAT_ID, POST_TOPIC_ID, session_number, do_warn=True)
 
-async def notify_10min():
-    """10 minute notification"""
-    next_s = next_session_num(session_number)
+async def notify_10min(next_sess_num):
+    """10 minute notification with correct next session number"""
+    next_s = next_sess_num
     sent = await bot_instance.send_message(
         chat_id=CHAT_ID,
         message_thread_id=POST_TOPIC_ID,
@@ -435,10 +431,9 @@ async def notify_10min():
     )
     track_msg(POST_TOPIC_ID, sent.message_id)
 
-async def notify_5min():
-    """5 minute notification and session increment"""
-    global session_number
-    next_s = next_session_num(session_number)
+async def notify_5min(next_sess_num):
+    """5 minute notification with correct next session number"""
+    next_s = next_sess_num
     sent = await bot_instance.send_message(
         chat_id=CHAT_ID,
         message_thread_id=POST_TOPIC_ID,
@@ -446,7 +441,7 @@ async def notify_5min():
         parse_mode="Markdown"
     )
     track_msg(POST_TOPIC_ID, sent.message_id)
-    session_number = next_s
+    # Session number will be set by auto_open, not here
 
 # ═══════════════════════════════════════════════════════════════
 # COMMAND HANDLERS - RESTRICTED TO POST TOPIC
@@ -951,7 +946,6 @@ commands = [
     ("clear", clear_topic),
     ("topicid", topicid),
     ("setsession", setsession),
-    ("getid", getid),
 ]
 
 for cmd, fn in commands:
@@ -965,7 +959,10 @@ app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, cache_new_
 app.add_handler(CallbackQueryHandler(button_handler, pattern="^(delete_|cancel)"))
 app.add_handler(CallbackQueryHandler(dashboard_buttons, pattern="^(view_times|toggle_auto|stats|streaks)$"))
 
-# Schedule automated jobs
+# Schedule automated jobs with correct session mapping
+# Session mapping: 11AM=1, 4PM=2, 8PM=3, 12AM=4
+SESSION_NUMBERS = [1, 2, 3, 4]
+
 for idx, sched in enumerate(SCHEDULE_IST):
     oh, om = ist_to_utc(*sched["open"])
     ch, cm = ist_to_utc(*sched["close"])
@@ -974,12 +971,17 @@ for idx, sched in enumerate(SCHEDULE_IST):
     n10h, n10m = ist_to_utc(*sched["notify10"])
     n5h, n5m = ist_to_utc(*sched["notify5"])
     
-    scheduler.add_job(auto_open, "cron", hour=oh, minute=om, id=f"open_{idx}")
+    current_session = SESSION_NUMBERS[idx]
+    next_session = SESSION_NUMBERS[(idx + 1) % 4]  # Wrap around after session 4
+    
+    # Pass session numbers to functions
+    scheduler.add_job(lambda s=current_session: auto_open(s), "cron", hour=oh, minute=om, id=f"open_{idx}")
     scheduler.add_job(auto_close, "cron", hour=ch, minute=cm, id=f"close_{idx}")
     scheduler.add_job(pre_check, "cron", hour=ckh, minute=ckm, id=f"check_{idx}")
     scheduler.add_job(generate_report, "cron", hour=rh, minute=rm, id=f"rep_{idx}")
-    scheduler.add_job(notify_10min, "cron", hour=n10h, minute=n10m, id=f"n10_{idx}")
-    scheduler.add_job(notify_5min, "cron", hour=n5h, minute=n5m, id=f"n5_{idx}")
+    scheduler.add_job(lambda ns=next_session: notify_10min(ns), "cron", hour=n10h, minute=n10m, id=f"n10_{idx}")
+    scheduler.add_job(lambda ns=next_session: notify_5min(ns), "cron", hour=n5h, minute=n5m, id=f"n5_{idx}")
+
 
 async def start_scheduler(application):
     """Initialize scheduler"""
