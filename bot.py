@@ -441,7 +441,6 @@ async def notify_5min(next_sess_num):
         parse_mode="Markdown"
     )
     track_msg(POST_TOPIC_ID, sent.message_id)
-    # Session number will be set by auto_open, not here
 
 # ═══════════════════════════════════════════════════════════════
 # COMMAND HANDLERS - RESTRICTED TO POST TOPIC
@@ -959,9 +958,27 @@ app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, cache_new_
 app.add_handler(CallbackQueryHandler(button_handler, pattern="^(delete_|cancel)"))
 app.add_handler(CallbackQueryHandler(dashboard_buttons, pattern="^(view_times|toggle_auto|stats|streaks)$"))
 
-# Schedule automated jobs with correct session mapping
+# ═══════════════════════════════════════════════════════════════
+# SCHEDULER SETUP WITH PROPER SESSION MAPPING
+# ═══════════════════════════════════════════════════════════════
 # Session mapping: 11AM=1, 4PM=2, 8PM=3, 12AM=4
 SESSION_NUMBERS = [1, 2, 3, 4]
+
+# Helper functions for scheduler (to avoid lambda closure issues)
+def make_auto_open(sess_num):
+    async def job():
+        await auto_open(sess_num)
+    return job
+
+def make_notify_10min(next_sess):
+    async def job():
+        await notify_10min(next_sess)
+    return job
+
+def make_notify_5min(next_sess):
+    async def job():
+        await notify_5min(next_sess)
+    return job
 
 for idx, sched in enumerate(SCHEDULE_IST):
     oh, om = ist_to_utc(*sched["open"])
@@ -974,14 +991,13 @@ for idx, sched in enumerate(SCHEDULE_IST):
     current_session = SESSION_NUMBERS[idx]
     next_session = SESSION_NUMBERS[(idx + 1) % 4]  # Wrap around after session 4
     
-    # Pass session numbers to functions
-    scheduler.add_job(lambda s=current_session: auto_open(s), "cron", hour=oh, minute=om, id=f"open_{idx}")
+    # Pass session numbers properly using wrapper functions
+    scheduler.add_job(make_auto_open(current_session), "cron", hour=oh, minute=om, id=f"open_{idx}")
     scheduler.add_job(auto_close, "cron", hour=ch, minute=cm, id=f"close_{idx}")
     scheduler.add_job(pre_check, "cron", hour=ckh, minute=ckm, id=f"check_{idx}")
     scheduler.add_job(generate_report, "cron", hour=rh, minute=rm, id=f"rep_{idx}")
-    scheduler.add_job(lambda ns=next_session: notify_10min(ns), "cron", hour=n10h, minute=n10m, id=f"n10_{idx}")
-    scheduler.add_job(lambda ns=next_session: notify_5min(ns), "cron", hour=n5h, minute=n5m, id=f"n5_{idx}")
-
+    scheduler.add_job(make_notify_10min(next_session), "cron", hour=n10h, minute=n10m, id=f"n10_{idx}")
+    scheduler.add_job(make_notify_5min(next_session), "cron", hour=n5h, minute=n5m, id=f"n5_{idx}")
 
 async def start_scheduler(application):
     """Initialize scheduler"""
@@ -996,5 +1012,6 @@ if __name__ == "__main__":
     print("🚀 Telegram Engagement Bot Starting...")
     print(f"📊 Threshold: {ENGAGE_THRESHOLD}%")
     print(f"🔢 Sessions: {MAX_SESSION_NUM}")
+    print(f"📅 Session Mapping: 11AM=1, 4PM=2, 8PM=3, 12AM=4")
     print("✅ All systems ready!")
     app.run_polling()
